@@ -73,7 +73,7 @@ Extract the archive, then run the executable.
   - Run another instance as the client on a different machine connected to the same local network  
   - Client connects using the local IP address of the server in your network  
   - Server creates a PIN code that the client must enter exactly to establish a secure connection
-
+    
 ---
 
 ### 📁 Files
@@ -82,7 +82,7 @@ Extract the archive, then run the executable.
 - `.gitignore` – excludes build files, OS cache, etc.  
 - `LICENSE` – open source license (MIT by default)  
 - `/bin/release.zip` – pre-compiled archive including executables and required files (`securem.exe`, `libsodium.dll` for Windows)
-
+  
 ---
 
 ## 📦 Version 1.1 – Security & Feature Improvements
