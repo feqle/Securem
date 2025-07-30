@@ -78,4 +78,22 @@ Extract the archive, then run the executable.
 - `main.cpp` – source code  
 - `.gitignore` – excludes build files, OS cache, etc.  
 - `LICENSE` – open source license (MIT by default)  
-- `/bin/release.zip` – pre-compiled archive including executables and required files (`securem.exe`, `libsodium.dll` for Windows)  
+- `/bin/release.zip` – pre-compiled archive including executables and required files (`securem.exe`, `libsodium.dll` for Windows)
+
+---
+
+## 📦 Version 1.1 – Security & Feature Improvements
+
+### 🔐 Security Enhancements
+- 🔑 Fingerprint Verification  
+  Added fingerprint display and manual verification step to defend against Man-in-the-Middle (MITM) attacks. The client must confirm the server's fingerprint before continuing.
+  
+- 🔒 PIN Brute-Force Protection  
+  Implemented a limited number of attempts (3) for entering the correct PIN code, helping prevent brute-force attacks.
+
+### ⚙️ Functional Improvements
+- 📡 Port Update  
+  Changed the default port to 49152 to avoid conflicts with reserved or commonly scanned ports.
+
+- 🌐 Client IP Display  
+  The server now logs and displays the IP address of each connecting client, enhancing transparency and monitoring.
