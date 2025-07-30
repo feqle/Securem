@@ -55,21 +55,24 @@ Extract the archive, then run the executable.
 
 ---
 
-## ⚙ How it works
+## ⚙️ How it works
 
-- Runs in **server** or **client** mode  
-- The **server** waits for a connection from the client  
-- Server generates and sends a **4-digit PIN code** to the client  
-- Both sides verify the PIN and derive a symmetric encryption key using libsodium's generic hash function  
-- Messages are encrypted with `crypto_secretbox` (XSalsa20 stream cipher + Poly1305 MAC)  
-- Each message is sent with a **random nonce** prefix for security  
-- Supports **graceful exit** with a special exit tag (`__exit__`)  
-- Console-based interface with **color-coded** input and output for clarity  
-- **Works only on local network (LAN):**  
-  - Run one instance as the **server** on one machine  
-  - Run another instance as the **client** on a different machine connected to the same local network  
-  - Client connects using the **local IP address** of the server in your network  
-  - Server creates a **PIN code** that the client must enter exactly to establish a secure connection  
+- Runs in server or client mode  
+- The server waits for a connection from the client and displays the client's IP upon connection  
+- Server generates and sends a 4-digit PIN code to the client  
+- Server generates a keypair and sends its public key to the client; client verifies the server’s fingerprint manually to defend against MITM attacks  
+- Client generates its own keypair and sends its public key to the server  
+- Both sides verify the PIN with a limited number of attempts (3) to prevent brute-force attacks  
+- Both sides derive symmetric session keys using libsodium’s crypto_kx functions based on exchanged public keys and secret keys  
+- Messages are encrypted with crypto_secretbox (XSalsa20 stream cipher + Poly1305 MAC)  
+- Each message is sent with a random nonce prefix for security  
+- Supports graceful exit with a special exit tag (`__exit__`)  
+- Console-based interface with color-coded input and output for clarity  
+- Works only on local network (LAN):  
+  - Run one instance as the server on one machine  
+  - Run another instance as the client on a different machine connected to the same local network  
+  - Client connects using the local IP address of the server in your network  
+  - Server creates a PIN code that the client must enter exactly to establish a secure connection
 
 ---
 
