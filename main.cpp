@@ -6,7 +6,6 @@
  *
  * © 2025 feqle. All rights reserved.
  */
-
 #include <iostream>
 #include <string>
 #include <thread>
@@ -28,7 +27,7 @@
 
 #include <sodium.h>
 
-#define PORT 5554
+#define PORT 49152
 #define BUFFER_SIZE 4096
 
 #ifdef _WIN32
@@ -47,7 +46,7 @@ int sockfd = -1;
 int connfd = -1;
 std::string username = "User";
 
-// Close sockets and mark stop flag
+// Close sockets and stop the application
 void cleanup() {
     running = false;
 #ifdef _WIN32
@@ -63,17 +62,6 @@ void cleanup() {
 // Ctrl+C handler
 void signal_handler(int) {
     std::cout << "\n[!] Exit...\n";
-
-    // If connected, try to send exit message
-    if (connfd != -1) {
-        const char exit_tag[] = "__exit__";
-        unsigned char nonce[crypto_secretbox_NONCEBYTES];
-        randombytes_buf(nonce, crypto_secretbox_NONCEBYTES);
-
-        std::vector<unsigned char> cipher(crypto_secretbox_MACBYTES + sizeof(exit_tag));
-        crypto_secretbox_easy(cipher.data(), (const unsigned char*)exit_tag, sizeof(exit_tag) - 1, nonce, (unsigned char*)nullptr);
-        // NOTE: Key is not available here, so this is mostly symbolic
-    }
     cleanup();
     exit(0);
 }
@@ -138,7 +126,6 @@ void send_loop(int fd, const unsigned char* key) {
             break;
         }
 
-        // If user types "exit", send special exit tag and break
         if (line == "exit") {
             std::string tag = "__exit__";
             unsigned char nonce[crypto_secretbox_NONCEBYTES];
@@ -156,7 +143,6 @@ void send_loop(int fd, const unsigned char* key) {
             break;
         }
 
-        // Add username prefix
         line = username + ": " + line;
 
         unsigned char nonce[crypto_secretbox_NONCEBYTES];
@@ -200,25 +186,34 @@ void recv_loop(int fd, const unsigned char* key) {
 
         std::string msg(decrypted.begin(), decrypted.end());
 
-        // Handle exit tag
         if (msg == "__exit__") {
             std::cout << COLOR_BLUE << "\n[Friend has left the chat]" << COLOR_RESET << std::endl;
             running = false;
             break;
         }
 
-        // Display received message
         std::cout << "\n" << COLOR_BLUE << msg << COLOR_RESET
             << "\n" << COLOR_GREEN << "> " << COLOR_RESET;
     }
 
-    // Final cleanup and clear terminal
     cleanup();
     clear_screen();
     std::cout << "Session ended, chat cleared.\n";
 }
 
-// Entry point
+// Display short fingerprint of the public key
+void print_fingerprint(const unsigned char* pubkey) {
+    unsigned char fp[5];
+    crypto_generichash(fp, sizeof(fp), pubkey, crypto_kx_PUBLICKEYBYTES, nullptr, 0);
+
+    std::cout << "Fingerprint: ";
+    for (int i = 0; i < 5; ++i) {
+        printf("%02X", fp[i]);
+        if (i < 4) std::cout << "-";
+    }
+    std::cout << std::endl;
+}
+
 int main() {
     signal(SIGINT, signal_handler);
 
@@ -248,16 +243,23 @@ int main() {
         std::cin.ignore();
     } while (mode != 's' && mode != 'c');
 
-    std::string pin;
-    unsigned char key[crypto_secretbox_KEYBYTES];
+    unsigned char session_rx[crypto_kx_SESSIONKEYBYTES];
+    unsigned char session_tx[crypto_kx_SESSIONKEYBYTES];
 
     if (mode == 's') {
         // --- SERVER MODE ---
-        std::cout << "Enter 4-digit PIN: ";
-        std::getline(std::cin, pin);
-        if (pin.size() != 4) {
-            std::cerr << "PIN must be exactly 4 digits\n";
-            cleanup();
+        std::string pin;
+        do {
+            std::cout << "Enter 4-digit PIN: ";
+            std::getline(std::cin, pin);
+        } while (pin.size() != 4);
+
+        // Generate server key pair
+        unsigned char server_pk[crypto_kx_PUBLICKEYBYTES];
+        unsigned char server_sk[crypto_kx_SECRETKEYBYTES];
+
+        if (crypto_kx_keypair(server_pk, server_sk) != 0) {
+            std::cerr << "Failed to generate server keypair\n";
             return 1;
         }
 
@@ -266,20 +268,47 @@ int main() {
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
         addr.sin_port = htons(PORT);
+        print_fingerprint(server_pk);
 
-        bind(sockfd, (sockaddr*)&addr, sizeof(addr));
+        if (bind(sockfd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+            std::cerr << "Bind failed\n";
+            cleanup();
+            return 1;
+        }
         listen(sockfd, 1);
 
         std::cout << "Waiting for connection...\n";
         connfd = accept(sockfd, nullptr, nullptr);
+        if (connfd < 0) {
+            std::cerr << "Accept failed\n";
+            cleanup();
+            return 1;
+        }
         std::cout << "Client connected!\n";
 
-        // Send PIN
+        // Send server's public key
+        secure_send(connfd, server_pk, crypto_kx_PUBLICKEYBYTES);
+
+        // Send PIN to client
         secure_send(connfd, (const unsigned char*)pin.data(), pin.size());
 
-        // Receive PIN back from client
+        // Receive client's public key
+        std::vector<unsigned char> client_pk_vec;
+        if (!secure_recv(connfd, client_pk_vec) || client_pk_vec.size() != crypto_kx_PUBLICKEYBYTES) {
+            std::cerr << "Failed to receive client public key\n";
+            cleanup();
+            return 1;
+        }
+        unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
+        memcpy(client_pk, client_pk_vec.data(), crypto_kx_PUBLICKEYBYTES);
+
+        // Receive PIN from client
         std::vector<unsigned char> recvpin;
-        secure_recv(connfd, recvpin);
+        if (!secure_recv(connfd, recvpin)) {
+            std::cerr << "Failed to receive PIN\n";
+            cleanup();
+            return 1;
+        }
         std::string client_pin(recvpin.begin(), recvpin.end());
         if (client_pin != pin) {
             std::cerr << "PIN mismatch\n";
@@ -288,12 +317,29 @@ int main() {
         }
         std::cout << "PIN verified!\n";
 
-        // Derive encryption key from PIN
-        crypto_generichash(key, sizeof(key),
-            (const unsigned char*)pin.data(), pin.size(),
-            nullptr, 0);
+        // Receive client's IP address
+        std::vector<unsigned char> ip_buf;
+        if (!secure_recv(connfd, ip_buf)) {
+            std::cerr << "Failed to receive client IP\n";
+            cleanup();
+            return 1;
+        }
+        std::string client_ip(ip_buf.begin(), ip_buf.end());
+        std::cout << "Connected client IP: " << client_ip << std::endl;
 
-        connfd = connfd;
+        // Generate session keys (server)
+        if (crypto_kx_server_session_keys(session_rx, session_tx, server_pk, server_sk, client_pk) != 0) {
+            std::cerr << "Failed to create session keys\n";
+            cleanup();
+            return 1;
+        }
+
+        // Use tx key for sending, rx for receiving
+        std::thread t_recv(recv_loop, connfd, session_rx);
+        std::thread t_send(send_loop, connfd, session_tx);
+        t_recv.join();
+        t_send.join();
+
     }
     else {
         // --- CLIENT MODE ---
@@ -315,33 +361,90 @@ int main() {
         connfd = sockfd;
         std::cout << "Connected!\n";
 
+        // Receive server's public key
+        std::vector<unsigned char> server_pk_vec;
+        if (!secure_recv(sockfd, server_pk_vec) || server_pk_vec.size() != crypto_kx_PUBLICKEYBYTES) {
+            std::cerr << "Failed to receive server public key\n";
+            cleanup();
+            return 1;
+        }
+        unsigned char server_pk[crypto_kx_PUBLICKEYBYTES];
+        memcpy(server_pk, server_pk_vec.data(), crypto_kx_PUBLICKEYBYTES);
+
+        // Display server key fingerprint
+        print_fingerprint(server_pk);
+
+        // Ask user to verify the fingerprint manually
+        std::string confirm;
+        std::cout << "Does the fingerprint match the server's? (y/n): ";
+        std::getline(std::cin, confirm);
+        if (confirm != "y") {
+            std::cerr << "Fingerprint mismatch. Aborting.\n";
+            cleanup();
+            return 1;
+        }
+
         // Receive PIN from server
         std::vector<unsigned char> recvpin;
-        secure_recv(sockfd, recvpin);
+        if (!secure_recv(sockfd, recvpin)) {
+            std::cerr << "Failed to receive PIN\n";
+            cleanup();
+            return 1;
+        }
         std::string server_pin(recvpin.begin(), recvpin.end());
 
-        // Confirm PIN
-        std::string input_pin;
-        do {
+        // Generate client key pair
+        unsigned char client_pk[crypto_kx_PUBLICKEYBYTES];
+        unsigned char client_sk[crypto_kx_SECRETKEYBYTES];
+        crypto_kx_keypair(client_pk, client_sk);
+
+        // Send client's public key
+        secure_send(sockfd, client_pk, crypto_kx_PUBLICKEYBYTES);
+
+        // Limit PIN entry attempts
+        int attempts = 3;
+        bool pin_ok = false;
+        while (attempts--) {
+            std::string input_pin;
             std::cout << "Enter received PIN: ";
             std::getline(std::cin, input_pin);
-        } while (input_pin != server_pin);
 
-        // Send PIN back
-        secure_send(sockfd, (const unsigned char*)input_pin.data(), input_pin.size());
-        std::cout << "PIN verified!\n";
+            if (input_pin == server_pin) {
+                secure_send(sockfd, (const unsigned char*)input_pin.data(), input_pin.size());
+                pin_ok = true;
+                break;
+            }
+            std::cout << "Incorrect PIN. Attempts left: " << attempts << "\n";
+        }
+        if (!pin_ok) {
+            std::cerr << "Too many failed attempts. Aborting.\n";
+            cleanup();
+            return 1;
+        }
 
-        // Derive encryption key
-        crypto_generichash(key, sizeof(key),
-            (const unsigned char*)input_pin.data(), input_pin.size(),
-            nullptr, 0);
+        // Retrieve client's local IP address (as seen by the server)
+        sockaddr_in local_addr;
+        socklen_t addr_len = sizeof(local_addr);
+        getsockname(sockfd, (sockaddr*)&local_addr, &addr_len);
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &local_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+
+        // Send client's IP to server
+        secure_send(sockfd, (const unsigned char*)client_ip, strlen(client_ip));
+
+        // Generate session keys (client)
+        if (crypto_kx_client_session_keys(session_rx, session_tx, client_pk, client_sk, server_pk) != 0) {
+            std::cerr << "Failed to create session keys\n";
+            cleanup();
+            return 1;
+        }
+
+        // Start chat threads
+        std::thread t_recv(recv_loop, connfd, session_rx);
+        std::thread t_send(send_loop, connfd, session_tx);
+        t_recv.join();
+        t_send.join();
     }
-
-    // Start chat threads
-    std::thread t_recv(recv_loop, connfd, key);
-    std::thread t_send(send_loop, connfd, key);
-    t_recv.join();
-    t_send.join();
 
     cleanup();
     clear_screen();
